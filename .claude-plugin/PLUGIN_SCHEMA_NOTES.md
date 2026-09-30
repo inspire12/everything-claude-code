@@ -45,60 +45,52 @@ Example:
 
 The following fields **must always be arrays**:
 
-* `agents`
 * `commands`
 * `skills`
 * `hooks` (if present)
 
 Even if there is only one entry, **strings are not accepted**.
 
-### Invalid
-
-```json
-{
-  "agents": "./agents"
-}
-```
-
-### Valid
-
-```json
-{
-  "agents": ["./agents/planner.md"]
-}
-```
-
 This applies consistently across all component path fields.
 
 ---
 
-## Path Resolution Rules (Critical)
+## Agent `tools` Frontmatter: USE A SCALAR
 
-### Agents MUST use explicit file paths
+The array rule above applies to `plugin.json`, not agent Markdown frontmatter.
+Claude Code agent files use a comma-separated scalar for their tool allowlist:
 
-The validator **does not accept directory paths for `agents`**.
-
-Even the following will fail:
-
-```json
-{
-  "agents": ["./agents/"]
-}
+```yaml
+tools: Read, Glob, Grep
 ```
 
-Instead, you must enumerate agent files explicitly:
+Do not use a YAML sequence such as `tools: [Read, Glob, Grep]`. Omitting the
+`tools` field grants the agent access to all tools, but ECC agents declare
+explicit allowlists and the repository validator requires the field.
 
-```json
-{
-  "agents": [
-    "./agents/planner.md",
-    "./agents/architect.md",
-    "./agents/code-reviewer.md"
-  ]
-}
+---
+
+## The `agents` Field: DO NOT ADD
+
+> WARNING: **CRITICAL:** Do NOT add an `"agents"` field to `plugin.json`. The Claude Code plugin validator rejects it entirely.
+
+### Why This Matters
+
+The `agents` field is not part of the Claude Code plugin manifest schema. Any form of it -- string path, array of paths, or array of directories -- causes a validation error:
+
+```
+agents: Invalid input
 ```
 
-This is the most common source of validation errors.
+Agent `.md` files under `agents/` are discovered automatically by convention (similar to hooks). They do not need to be declared in the manifest.
+
+### History
+
+Previously this repo listed agents explicitly in `plugin.json` as an array of file paths. This passed the repo's own schema but failed Claude Code's actual validator, which does not recognize the field. Removed in #1459.
+
+---
+
+## Path Resolution Rules
 
 ### Commands and Skills
 
@@ -118,15 +110,75 @@ Assume the validator is hostile and literal.
 
 ---
 
+## The `hooks` Field: DO NOT ADD
+
+> WARNING: **CRITICAL:** Do NOT add a `"hooks"` field to `plugin.json`. This is enforced by a regression test.
+
+### Why This Matters
+
+Claude Code v2.1+ **automatically loads** `hooks/hooks.json` from any installed plugin by convention. If you also declare it in `plugin.json`, you get:
+
+```
+Duplicate hooks file detected: ./hooks/hooks.json resolves to already-loaded file.
+The standard hooks/hooks.json is loaded automatically, so manifest.hooks should
+only reference additional hook files.
+```
+
+### The Flip-Flop History
+
+This has caused repeated fix/revert cycles in this repo:
+
+| Commit | Action | Trigger |
+|--------|--------|---------|
+| `22ad036` | ADD hooks | Users reported "hooks not loading" |
+| `a7bc5f2` | REMOVE hooks | Users reported "duplicate hooks error" (#52) |
+| `779085e` | ADD hooks | Users reported "agents not loading" (#88) |
+| `e3a1306` | REMOVE hooks | Users reported "duplicate hooks error" (#103) |
+
+**Root cause:** Claude Code CLI changed behavior between versions:
+- Pre-v2.1: Required explicit `hooks` declaration
+- v2.1+: Auto-loads by convention, errors on duplicate
+
+### Current Rule (Enforced by Test)
+
+The test `plugin.json does NOT have explicit hooks declaration` in `tests/hooks/hooks.test.js` prevents this from being reintroduced.
+
+**If you're adding additional hook files** (not `hooks/hooks.json`), those CAN be declared. But the standard `hooks/hooks.json` must NOT be declared.
+
+---
+
+## The `mcpServers` Field: Keep the Empty Opt-Out
+
+ECC keeps `.mcp.json` at the repository root for Codex plugin installs and manual MCP setup.
+Claude Code also auto-discovers plugin-root `.mcp.json` files by convention, which would bundle the same MCP servers into Claude plugin installs.
+The Claude plugin slug is intentionally short (`ecc`), but this opt-out is still required because legacy installs and strict provider gateways have failed on generated names from longer plugin identifiers.
+
+Keep this field in `.claude-plugin/plugin.json`:
+
+```json
+{
+  "mcpServers": {}
+}
+```
+
+This explicit empty object prevents Claude plugin installs from auto-loading ECC's root MCP definitions.
+Without the opt-out, strict OpenAI-compatible gateways can reject plugin MCP tool names such as `mcp__plugin_everything-claude-code_github__create_pull_request_review` because they exceed 64 characters.
+
+Users who want the bundled MCP servers should configure them manually from `.mcp.json` or `mcp-configs/mcp-servers.json`.
+
+---
+
 ## Known Anti-Patterns
 
 These look correct but are rejected:
 
 * String values instead of arrays
-* Arrays of directories for `agents`
+* **Adding `"agents"` in any form** - not a recognized manifest field, causes `Invalid input`
 * Missing `version`
 * Relying on inferred paths
 * Assuming marketplace behavior matches local validation
+* **Adding `"hooks": "./hooks/hooks.json"`** - auto-loaded by convention, causes duplicate error
+* Removing `"mcpServers": {}` - re-enables root `.mcp.json` auto-discovery for Claude plugin installs and can produce overlong MCP tool names
 
 Avoid cleverness. Be explicit.
 
@@ -137,10 +189,6 @@ Avoid cleverness. Be explicit.
 ```json
 {
   "version": "1.1.0",
-  "agents": [
-    "./agents/planner.md",
-    "./agents/code-reviewer.md"
-  ],
   "commands": ["./commands/"],
   "skills": ["./skills/"]
 }
@@ -148,16 +196,19 @@ Avoid cleverness. Be explicit.
 
 This structure has been validated against the Claude plugin validator.
 
+**Important:** Notice there is NO `"hooks"` field and NO `"agents"` field. Both are loaded automatically by convention. Adding either explicitly causes errors.
+
 ---
 
 ## Recommendation for Contributors
 
 Before submitting changes that touch `plugin.json`:
 
-1. Use explicit file paths for agents
-2. Ensure all component fields are arrays
-3. Include a `version`
-4. Run:
+1. Ensure all component fields are arrays
+2. Include a `version`
+3. Do NOT add `agents` or `hooks` fields (both are auto-loaded by convention)
+4. Preserve `"mcpServers": {}` unless you are intentionally changing Claude plugin MCP bundling behavior
+5. Run:
 
 ```bash
 claude plugin validate .claude-plugin/plugin.json
